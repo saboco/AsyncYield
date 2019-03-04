@@ -3,30 +3,11 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Threading.Tasks;
 
 namespace AsyncYield
 {
-    public class YieldEnumerable<TItem, TResult> : IEnumerable<TItem>
-    {
-        private readonly Action<YieldEnumerator<TItem, TResult>> _iteratorMethod;
-
-        public YieldEnumerable(Action<YieldEnumerator<TItem, TResult>> iteratorMethod)
-        {
-            _iteratorMethod = iteratorMethod;
-        }
-
-        public IEnumerator<TItem> GetEnumerator()
-        {
-            var awaiter = new YieldEnumerator<TItem, TResult>();
-            _iteratorMethod(awaiter);
-            return awaiter;
-        }
-
-        IEnumerator IEnumerable.GetEnumerator()
-        {
-            return GetEnumerator();
-        }
-    }
+    public delegate Task IteratorMethod<TItem, TResult>(YieldEnumerator<TItem, TResult> e);
 
     public class YieldEnumerator<TItem, TResult> : IEnumerator<TItem>, INotifyCompletion
     {
@@ -38,20 +19,50 @@ namespace AsyncYield
         private bool _hasNextValue;
 
         private TResult _result;
+        private Task _task;
+
+        public YieldEnumerator(IteratorMethod<TItem,TResult> iteratorMethod)
+        {
+            _task = iteratorMethod(this);
+        }
+
+        private void Execute()
+        {
+            // If we already have a buffered value that hasn't been
+            // retrieved, we shouldn't do anything yet. If we don't
+            // and there's no continuation to run, we've finished.
+            // And if _task is null, we've been disposed.
+            if (_hasNextValue || _continuation == null || _task == null)
+                return;
+ 
+            // Be ultra-careful not to run same _continuation twice
+            var t = _continuation;
+            _continuation = null;
+            t(); // may or may not have stored a new _continuation
+ 
+            // And may also have hit a snag!
+            if (_task.Exception != null)
+            {
+                // Unpeel the AggregateException wrapping
+                Exception inner = _task.Exception;
+                while (inner is AggregateException)
+                    inner = inner.InnerException;
+ 
+                throw inner;
+            }
+        }
 
         public YieldEnumerator<TItem, TResult> GetAwaiter()
         {
             return this;
         }
 
-        public void Return(TResult value)
+        public bool IsCompleted => false;
+
+        public void OnCompleted(Action continuation)
         {
-            _result = value;
-        }
-        
-        public void Throw(Exception x)
-        {
-            _exception = x;
+            Debug.Assert(_continuation == null);
+            _continuation = continuation;
         }
 
         public TResult GetResult()
@@ -62,12 +73,9 @@ namespace AsyncYield
                 _exception = null;
                 throw t;
             }
-
-            _continuation = null;
+            
             return _result;
         }
-
-        public bool IsCompleted => false;
 
         public YieldEnumerator<TItem, TResult> YieldReturn(TItem value)
         {
@@ -85,23 +93,16 @@ namespace AsyncYield
 
         public bool MoveNext()
         {
-            if (!_hasNextValue)
+            Execute();
+
+            if (_hasNextValue)
             {
-                _continuation?.Invoke();
+                Current = _nextValue;
+                _hasNextValue = false;
+                return true;
             }
 
-            if (!_hasNextValue)
-                return false;
-
-            Current = _nextValue;
-            _hasNextValue = false;
-            return true;
-        }
-
-        public void Reset()
-        {
-            _nextValue = default(TItem);
-            _continuation = null;
+            return false;
         }
 
         public void Dispose()
@@ -112,21 +113,51 @@ namespace AsyncYield
 
                 try
                 {
-                    _continuation();
+                    Execute();
                 }
                 catch (AbandonEnumeratorException)
                 {
                     Debug.Assert(_exception == null);
                 }
 
-                _continuation = null;
+                _task.Dispose();
+                _task = null;
             }
         }
-
-        public void OnCompleted(Action continuation)
+        
+        public void Reset()
         {
-            Debug.Assert(_continuation == null);
-            _continuation = continuation;
+            throw new NotImplementedException("Reset");
+        }
+         
+        public void Return(TResult value)
+        {
+            _result = value;
+        }
+        
+        public void Throw(Exception x)
+        {
+            _exception = x;
+        }
+    }
+
+    public class YieldEnumerable<TItem, TResult> : IEnumerable<TItem>
+    {
+        private readonly IteratorMethod<TItem, TResult> _iteratorMethod;
+
+        public YieldEnumerable(IteratorMethod<TItem, TResult> iteratorMethod)
+        {
+            _iteratorMethod = iteratorMethod;
+        }
+
+        public IEnumerator<TItem> GetEnumerator()
+        {
+            return new YieldEnumerator<TItem, TResult>(_iteratorMethod);
+        }
+
+        IEnumerator IEnumerable.GetEnumerator()
+        {
+            return GetEnumerator();
         }
     }
 }
