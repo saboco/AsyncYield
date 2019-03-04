@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.IO;
 
+// Based on https://smellegantcode.wordpress.com/2010/12/14/unification-of-async-await-and-yield-return/
 namespace AsyncYield
 {
     internal class Program
