@@ -6,18 +6,18 @@ using System.Runtime.CompilerServices;
 
 namespace AsyncYield
 {
-    public class YieldEnumerable<TItem> : IEnumerable<TItem>
+    public class YieldEnumerable<TItem, TResult> : IEnumerable<TItem>
     {
-        private readonly Action<YieldEnumerator<TItem>> _iteratorMethod;
+        private readonly Action<YieldEnumerator<TItem, TResult>> _iteratorMethod;
 
-        public YieldEnumerable(Action<YieldEnumerator<TItem>> iteratorMethod)
+        public YieldEnumerable(Action<YieldEnumerator<TItem, TResult>> iteratorMethod)
         {
             _iteratorMethod = iteratorMethod;
         }
 
         public IEnumerator<TItem> GetEnumerator()
         {
-            var awaiter = new YieldEnumerator<TItem>();
+            var awaiter = new YieldEnumerator<TItem, TResult>();
             _iteratorMethod(awaiter);
             return awaiter;
         }
@@ -28,7 +28,7 @@ namespace AsyncYield
         }
     }
 
-    public class YieldEnumerator<TItem> : IEnumerator<TItem>, INotifyCompletion
+    public class YieldEnumerator<TItem, TResult> : IEnumerator<TItem>, INotifyCompletion
     {
         private sealed class AbandonEnumeratorException : Exception { }
         private Exception _exception;
@@ -37,14 +37,24 @@ namespace AsyncYield
         private TItem _nextValue;
         private bool _hasNextValue;
 
-        private TItem _current;
+        private TResult _result;
 
-        public YieldEnumerator<TItem> GetAwaiter()
+        public YieldEnumerator<TItem, TResult> GetAwaiter()
         {
             return this;
         }
 
-        public void GetResult()
+        public void Return(TResult value)
+        {
+            _result = value;
+        }
+        
+        public void Throw(Exception x)
+        {
+            _exception = x;
+        }
+
+        public TResult GetResult()
         {
             if (_exception != null)
             {
@@ -54,11 +64,12 @@ namespace AsyncYield
             }
 
             _continuation = null;
+            return _result;
         }
 
         public bool IsCompleted => false;
 
-        public YieldEnumerator<TItem> YieldReturn(TItem value)
+        public YieldEnumerator<TItem, TResult> YieldReturn(TItem value)
         {
             if (_hasNextValue)
                 throw new InvalidOperationException();
@@ -68,9 +79,9 @@ namespace AsyncYield
             return this;
         }
 
-        public TItem Current => _current;
+        public TItem Current { get; private set; }
 
-        object IEnumerator.Current => _current;
+        object IEnumerator.Current => Current;
 
         public bool MoveNext()
         {
@@ -82,7 +93,7 @@ namespace AsyncYield
             if (!_hasNextValue)
                 return false;
 
-            _current = _nextValue;
+            Current = _nextValue;
             _hasNextValue = false;
             return true;
         }
@@ -103,7 +114,7 @@ namespace AsyncYield
                 {
                     _continuation();
                 }
-                catch (AbandonEnumeratorException x)
+                catch (AbandonEnumeratorException)
                 {
                     Debug.Assert(_exception == null);
                 }
